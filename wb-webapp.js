@@ -94,7 +94,25 @@ process.env.WORKBUDDY_ELECTRON_BIN = CN_ELECTRON.bin || 'E:\\Program Files\\Work
 
 const PORT = parseInt(applyConfigPath('WB_PORT') || process.env.WB_PORT || '3085', 10);
 const HOST = '127.0.0.1';
-const TOKEN = crypto.randomBytes(24).toString('hex');
+
+// API Key 持久化：存到 MIRROR_DIR/api-token.txt，重启后不变；
+// 仅当文件不存在时才生成新 Key。删除 = 清空文件（清空后 /v1/* 拒绝请求，需重新生成）。
+function readStoredToken() {
+  try {
+    const t = fs.readFileSync(path.join(MIRROR_DIR, 'api-token.txt'), 'utf8').trim();
+    return t || '';
+  } catch { return ''; }
+}
+function writeStoredToken(t) {
+  try {
+    fs.mkdirSync(MIRROR_DIR, { recursive: true });
+    fs.writeFileSync(path.join(MIRROR_DIR, 'api-token.txt'), t || '', 'utf8');
+  } catch (e) { log('[token] write fail:', e.message); }
+}
+// 启动：有持久化 key 就复用，没有才生成
+let TOKEN = readStoredToken();
+if (!TOKEN) { TOKEN = crypto.randomBytes(24).toString('hex'); writeStoredToken(TOKEN); log('[token] generated new API key (not stored)'); }
+else log('[token] reused persisted API key');
 
 function log(...a) {
   const line = `[${new Date().toISOString()}] ` + a.join(' ');
@@ -211,12 +229,20 @@ async function route() {
     at: new Date().toISOString(),
     accounts: all,
     reason,
-    loopback: { baseUrl: `http://${HOST}:${PORT}`, token: TOKEN }
+    loopback: { baseUrl: `http://${HOST}:${PORT}/v1`, token: TOKEN, upstream: upstreamDomainOf(active) }
   };
   fs.mkdirSync(MIRROR_DIR, { recursive: true });
   fs.writeFileSync(ROUTE_FILE, JSON.stringify(decision, null, 2));
   log('route ->', active?.key || '(none)', '|', reason);
   return decision;
+}
+
+// 当前活跃账号实际上游调用域名（供 UI 展示「调用地址」）
+function upstreamDomainOf(active) {
+  if (!active) return '';
+  if (active.key === 'A') return 'www.workbuddy.ai (desktop plugin)';
+  const domain = active.region === 'cn' ? 'www.workbuddy.cn' : 'www.workbuddy.ai';
+  return domain + ' (cookie)';
 }
 
 // ============ Web account login (Playwright Chrome, key B/C/D/..., region ai/cn) ============
@@ -399,9 +425,10 @@ footer{color:var(--mut);font-size:11px;text-align:center;padding:18px 0 30px}
 <div class="sub" data-i18n="sub">账号 A（桌面客户端）+ 网页账号 B/C/D/... · 额度耗尽自动切换 · 每天 09:00 刷登录积分 · 内置 OpenAI 兼容端点</div>
 
 <div class="card">
-  <h2><span class="dot" id="loopDot"></span> <span data-i18n="proxy">循环代理（OpenAI 兼容端点）</span> <span class="tag route" id="routeTag">...</span></h2>
-  <div class="row"><span class="k" data-i18n="baseUrl">Base URL</span><span style="display:flex;align-items:center;gap:6px"><span class="v" id="baseUrl"></span><button class="btn ghost sm copy-btn" id="copyBaseUrl">复制</button></span></div>
-  <div class="row"><span class="k" data-i18n="apiKey">API Key</span><span style="display:flex;align-items:center;gap:6px"><span class="v" id="apiToken"></span><button class="btn ghost sm copy-btn" id="copyApiToken">复制</button></span></div>
+  <h2><span class="dot" id="loopDot"></span> <span data-i18n="proxy">接口地址（OpenAI 兼容）</span> <span class="tag route" id="routeTag">...</span></h2>
+  <div class="row"><span class="k" data-i18n="baseUrl">调用地址</span><span style="display:flex;align-items:center;gap:6px"><span class="v" id="baseUrl"></span><button class="btn ghost sm copy-btn" id="copyBaseUrl">复制</button></span></div>
+  <div class="row"><span class="k" data-i18n="apiKey">API Key</span><span style="display:flex;align-items:center;gap:6px"><span class="v" id="apiToken"></span><button class="btn ghost sm copy-btn" id="copyApiToken">复制</button><button class="btn ghost sm copy-btn" id="genToken" data-i18n="genKey">生成</button><button class="btn warn sm copy-btn" id="delToken" data-i18n="delKey">删除</button></span></div>
+  <div class="row"><span class="k" data-i18n="upstream">上游调用</span><span class="v" id="upstream">...</span></div>
   <div class="row"><span class="k" data-i18n="active">活跃账号</span><span class="v"><span class="pulse" id="activeName">...</span></span></div>
   <button class="btn ghost sm" id="btnRoute" data-i18n="reroute">立即重新路由</button>
   <div class="note" data-i18n="proxyNote">把 Base URL + API Key 填进任何 OpenAI 兼容客户端。免费模型：deepseek-v4.1-flash、hy3、step-5-preview</div>
@@ -456,7 +483,8 @@ const I18N={
   zh:{
     title:'WorkBuddy 多账号桥接',
     sub:'账号 A（桌面客户端）+ 网页账号 B/C/D/... · 额度耗尽自动切换 · 每天 09:00 刷登录积分 · 内置 OpenAI 兼容端点',
-    proxy:'循环代理（OpenAI 兼容端点）', baseUrl:'Base URL', apiKey:'API Key', active:'活跃账号',
+    proxy:'接口地址（OpenAI 兼容）', baseUrl:'调用地址', apiKey:'API Key', upstream:'上游调用', active:'活跃账号',
+    genKey:'生成', delKey:'删除', keyGen:'已生成新 API Key（请重新复制到客户端）', keyDel:'API Key 已删除，客户端需重新生成后才能调用', keyEmpty:'未设置',
     reroute:'立即重新路由',
     proxyNote:'把 Base URL + API Key 填进任何 OpenAI 兼容客户端。免费模型：deepseek-v4.1-flash、hy3、step-5-preview',
     accList:'账号列表', addHint:'（点「+ 新增账号」可继续加 B/C/D/...）',
@@ -499,7 +527,8 @@ const I18N={
   en:{
     title:'WorkBuddy Multi-Account Bridge',
     sub:'Account A (desktop client) + web accounts B/C/D/... - auto-switch on credit depletion - daily 09:00 login-bonus - built-in OpenAI-compatible endpoint',
-    proxy:'Loopback Proxy (OpenAI-compatible)', baseUrl:'Base URL', apiKey:'API Key', active:'Active Account',
+    proxy:'Endpoint (OpenAI-compatible)', baseUrl:'Endpoint URL', apiKey:'API Key', upstream:'Upstream', active:'Active Account',
+    genKey:'Generate', delKey:'Delete', keyGen:'New API Key generated (re-copy to your client)', keyDel:'API Key deleted, client must regenerate before use', keyEmpty:'not set',
     reroute:'Re-route now',
     proxyNote:'Fill Base URL + API Key into any OpenAI-compatible client. Free models: deepseek-v4.1-flash, hy3, step-5-preview',
     accList:'Account List', addHint:'(click "+ Add Account" to add B/C/D/...)',
@@ -593,7 +622,8 @@ async function refresh(){
   try{
     const s=await j('/api/accounts');
     $('baseUrl').textContent=s.loopback.baseUrl;
-    $('apiToken').textContent=s.loopback.token;
+    $('apiToken').textContent=s.loopback.token||'-';
+    $('upstream').textContent=s.loopback.upstream||'-';
     $('routeTag').textContent=s.activeKey||'-';
     const activeAcc=(s.accounts||[]).find(a=>a.key===s.activeKey);
     $('activeName').textContent=((s.activeName?s.activeName:(s.activeKey?s.activeKey:'-'))+' · '+reasonText(activeAcc));
@@ -685,6 +715,25 @@ async function copyText(s,btn){
 $('copyBaseUrl').onclick=()=>copyText($('baseUrl').textContent,$('copyBaseUrl'));
 $('copyApiToken').onclick=()=>copyText($('apiToken').textContent,$('copyApiToken'));
 
+// ===== API Key 生成 / 删除 =====
+$('genToken').onclick=async()=>{
+  try{
+    const r=await fetch('/api/token/regenerate',{method:'POST'});
+    const o=await r.json();
+    alert(t('keyGen'));
+    await refresh();
+  }catch(e){alert('生成失败：'+e.message)}
+};
+$('delToken').onclick=async()=>{
+  if(!confirm('删除 API Key 后，已配置该 Key 的客户端将无法调用，需重新生成。继续？'))return;
+  try{
+    const r=await fetch('/api/token/delete',{method:'POST'});
+    const o=await r.json();
+    alert(t('keyDel'));
+    await refresh();
+  }catch(e){alert('删除失败：'+e.message)}
+};
+
 $('btnExportAll').onclick=async()=>{
   try{
     const r=await fetch('/api/export?all=1');
@@ -736,7 +785,7 @@ function startDaemon() {
 
 function writeEndpoint() {
   fs.mkdirSync(MIRROR_DIR, { recursive: true });
-  fs.writeFileSync(EP_FILE, JSON.stringify({ host: HOST, port: PORT, token: TOKEN, baseUrl: `http://${HOST}:${PORT}`, startedAt: new Date().toISOString() }, null, 2));
+  fs.writeFileSync(EP_FILE, JSON.stringify({ host: HOST, port: PORT, token: TOKEN || '', baseUrl: `http://${HOST}:${PORT}/v1`, startedAt: new Date().toISOString() }, null, 2));
 }
 
 function ensurePlaywright() {
@@ -784,7 +833,7 @@ async function main() {
       let lastRoute = null;
       try { lastRoute = JSON.parse(fs.readFileSync(ROUTE_FILE, 'utf8')); } catch {}
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ loopback: { baseUrl: `http://${HOST}:${PORT}`, token: TOKEN }, activeKey: lastRoute?.activeKey, activeName: lastRoute?.activeName, reason: lastRoute?.reason, accounts: [A, ...webs], lastRoute }));
+      res.end(JSON.stringify({ loopback: { baseUrl: `http://${HOST}:${PORT}/v1`, token: TOKEN, upstream: upstreamDomainOf(lastRoute?.activeKey ? (lastRoute.accounts||[]).find(a=>a.key===lastRoute.activeKey) : null) }, activeKey: lastRoute?.activeKey, activeName: lastRoute?.activeName, reason: lastRoute?.reason, accounts: [A, ...webs], lastRoute }));
       return;
     }
 
@@ -792,6 +841,26 @@ async function main() {
       const d = await route();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(d));
+      return;
+    }
+
+    // ===== API Key 管理：生成（新 Key）/ 删除（清空） =====
+    if (req.method === 'POST' && clean === '/api/token/regenerate') {
+      TOKEN = crypto.randomBytes(24).toString('hex');
+      writeStoredToken(TOKEN);
+      writeEndpoint();
+      log('[token] regenerated API key');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: TOKEN }));
+      return;
+    }
+    if (req.method === 'POST' && clean === '/api/token/delete') {
+      TOKEN = '';
+      writeStoredToken('');
+      writeEndpoint();
+      log('[token] API key deleted (cleared)');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: '' }));
       return;
     }
 
@@ -842,7 +911,7 @@ async function main() {
 
     if (req.method === 'GET' && (clean === '/v1/models' || clean === '/v1/models/')) {
       const auth = req.headers.authorization || '';
-      if (auth !== `Bearer ${TOKEN}`) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'unauthorized', type: 'auth' } })); return; }
+      if (!TOKEN || auth !== `Bearer ${TOKEN}`) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: TOKEN ? 'unauthorized' : 'API key not set - generate one in the UI', type: 'auth' } })); return; }
       const lastRoute = JSON.parse(fs.existsSync(ROUTE_FILE) ? fs.readFileSync(ROUTE_FILE, 'utf8') : '{}');
       const activeKey = lastRoute.activeKey || 'A';
       try {
@@ -879,7 +948,7 @@ async function main() {
     }
     if (req.method === 'POST' && clean === '/v1/chat/completions') {
       const auth = req.headers.authorization || '';
-      if (auth !== `Bearer ${TOKEN}`) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'unauthorized', type: 'auth' } })); return; }
+      if (!TOKEN || auth !== `Bearer ${TOKEN}`) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: TOKEN ? 'unauthorized' : 'API key not set - generate one in the UI', type: 'auth' } })); return; }
       const chunks = [];
       req.on('data', c => chunks.push(c));
       req.on('end', async () => {
