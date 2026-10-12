@@ -388,6 +388,8 @@ footer{color:var(--mut);font-size:11px;text-align:center;padding:18px 0 30px}
 .lang{display:inline-flex;gap:6px}
 .lang button{background:transparent;border:1px solid var(--bd);color:var(--mut);border-radius:5px;padding:2px 8px;font-size:11px;cursor:pointer}
 .lang button.on{color:#fff;border-color:var(--acc);background:var(--acc)}
+.copy-btn{margin-top:0;padding:3px 8px;font-size:11px;flex-shrink:0}
+.copy-btn.copied{color:var(--ok);border-color:var(--ok);background:transparent}
 </style></head>
 <body><div class="wrap">
 <div class="topbar">
@@ -398,8 +400,8 @@ footer{color:var(--mut);font-size:11px;text-align:center;padding:18px 0 30px}
 
 <div class="card">
   <h2><span class="dot" id="loopDot"></span> <span data-i18n="proxy">循环代理（OpenAI 兼容端点）</span> <span class="tag route" id="routeTag">...</span></h2>
-  <div class="row"><span class="k" data-i18n="baseUrl">Base URL</span><span class="v" id="baseUrl"></span></div>
-  <div class="row"><span class="k" data-i18n="apiKey">API Key</span><span class="v" id="apiToken"></span></div>
+  <div class="row"><span class="k" data-i18n="baseUrl">Base URL</span><span style="display:flex;align-items:center;gap:6px"><span class="v" id="baseUrl"></span><button class="btn ghost sm copy-btn" id="copyBaseUrl">复制</button></span></div>
+  <div class="row"><span class="k" data-i18n="apiKey">API Key</span><span style="display:flex;align-items:center;gap:6px"><span class="v" id="apiToken"></span><button class="btn ghost sm copy-btn" id="copyApiToken">复制</button></span></div>
   <div class="row"><span class="k" data-i18n="active">活跃账号</span><span class="v"><span class="pulse" id="activeName">...</span></span></div>
   <button class="btn ghost sm" id="btnRoute" data-i18n="reroute">立即重新路由</button>
   <div class="note" data-i18n="proxyNote">把 Base URL + API Key 填进任何 OpenAI 兼容客户端。免费模型：deepseek-v4.1-flash、hy3、step-5-preview</div>
@@ -662,6 +664,27 @@ async function copyAuthOne(key){
     alert(ok?t('authExportedN',{n:1}):'复制失败，请手动选择文本复制');
   }catch(e){alert('导出失败：'+e.message)}
 }
+// ===== 点击复制：Base URL / API Key =====
+function flashCopied(btn){
+  const orig=btn.textContent;
+  btn.textContent='已复制 ✓';
+  btn.classList.add('copied');
+  setTimeout(()=>{btn.textContent=orig;btn.classList.remove('copied')},1500);
+}
+async function copyText(s,btn){
+  try{
+    await navigator.clipboard.writeText(s);
+    flashCopied(btn);
+  }catch{
+    // 兜底：textarea 复制
+    const ta=document.createElement('textarea');ta.value=s;document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');flashCopied(btn)}catch{alert('复制失败，请手动选择文本复制')}
+    document.body.removeChild(ta);
+  }
+}
+$('copyBaseUrl').onclick=()=>copyText($('baseUrl').textContent,$('copyBaseUrl'));
+$('copyApiToken').onclick=()=>copyText($('apiToken').textContent,$('copyApiToken'));
+
 $('btnExportAll').onclick=async()=>{
   try{
     const r=await fetch('/api/export?all=1');
