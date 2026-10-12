@@ -1,0 +1,25 @@
+{
+  "name": "workbuddy-dual-router",
+  "displayName": "WorkBuddy 双账号自动路由",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WorkBuddy 双账号桥接：账号 A（桌面登录态，官方 0.7.2 解密）+ 账号 B（网页 cookie），额度耗尽自动切换 + 每天 09:00 刷 30 积分",
+  "bin": {
+    "wb-router": "router.js",
+    "wb-loopback": "loopback.mjs",
+    "wb-login": "router.js login"
+  },
+  "scripts": {
+    "login": "node router.js login",
+    "poll": "node router.js poll",
+    "daemon": "node router.js poll --daemon",
+    "status": "node router.js status",
+    "selftest": "node router.js selftest",
+    "loopback": "node loopback.mjs",
+    "verify": "node verify-route.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.54.2"
+  }
+}

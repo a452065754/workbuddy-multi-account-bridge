@@ -1,0 +1,19 @@
+﻿# 本机配置（含个人路径，不入库）
+portable-config.txt
+portable-config.local.txt
+local-config.txt
+
+# 依赖
+node_modules/
+npm-cache/
+
+# 日志
+*.log
+
+# 认证信息导出（可能含 cookie，不入库）
+workbuddy-auth-export.json
+auth-export-*.json
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db

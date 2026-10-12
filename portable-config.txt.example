@@ -1,0 +1,21 @@
+﻿# WorkBuddy multi-account bridge portable config (example)
+# Copy to portable-config.txt and fill in paths for your machine, or just run
+# start-bridge.bat once and let it auto-detect & regenerate portable-config.txt.
+#
+# "~" means the current user home directory.
+
+WORKBUDDY_AI_ELECTRON_BIN=
+# WorkBuddyAI.exe international desktop client
+WORKBUDDY_ELECTRON_BIN=
+# WorkBuddy.exe domestic desktop client
+DSH_HOME=~/.dsh
+WORKBUDDY_MIRROR_DIR=~/.workbuddy-mirror
+WORKBUDDY_PLUGIN_MAIN=
+# Optional explicit plugin path; leave empty to derive from DSH_HOME.
+WB_PORT=3085
+
+# Requirements on target machine:
+#   1. Node.js LTS installed
+#   2. For desktop account A: WorkBuddy / WorkBuddyAI desktop client installed
+#   3. For desktop account A: DSH web profile with dsh-workbuddy-connect installed
+#   4. Web accounts B/C/D... do not need requirements 2/3; carry login cookies via UI import/export.
