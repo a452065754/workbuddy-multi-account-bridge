@@ -4,20 +4,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "WorkBuddy 双账号桥接：账号 A（桌面登录态，官方 0.7.2 解密）+ 账号 B（网页 cookie），额度耗尽自动切换 + 每天 09:00 刷 30 积分",
-  "bin": {
-    "wb-router": "router.js",
-    "wb-loopback": "loopback.mjs",
-    "wb-login": "router.js login"
-  },
+  "description": "WorkBuddy 多账号桥接：账号 A（桌面登录态，官方 0.7.2 解密）+ 网页账号 B/C/D...（cookie 登录），额度耗尽自动切换 + 可移植部署 + 认证信息导入导出",
   "scripts": {
-    "login": "node router.js login",
-    "poll": "node router.js poll",
-    "daemon": "node router.js poll --daemon",
-    "status": "node router.js status",
-    "selftest": "node router.js selftest",
-    "loopback": "node loopback.mjs",
-    "verify": "node verify-route.mjs"
+    "start": "node run-bridge.cjs",
+    "webapp": "node wb-webapp.js",
+    "verify": "node verify-webapp.js",
+    "make-config": "node make-portable-config.mjs"
   },
   "dependencies": {
     "playwright": "1.54.2"
