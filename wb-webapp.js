@@ -247,6 +247,32 @@ function upstreamDomainOf(active) {
 
 // ============ Web account login (Playwright Chrome, key B/C/D/..., region ai/cn) ============
 const loginBusy = new Set();
+
+// 探测系统里已登录 Google 的真实 Chrome 用户配置目录。
+// 用它启动可让 Google OAuth 风控识别为「你日常用的浏览器」，避免「此浏览器可能不安全」拦截；
+// 同时复用它已登录的 Google 会话，免去二次扫码/输密码。
+function findChromeUserDataDir() {
+  if (process.platform === 'win32') {
+    const cands = [
+      path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data'),
+      path.join(process.env.APPDATA || '', 'Google', 'Chrome', 'User Data'),
+    ];
+    for (const c of cands) if (c && fs.existsSync(path.join(c, 'Local State'))) return c;
+  }
+  return '';
+}
+function findChromeExecutable() {
+  if (process.platform === 'win32') {
+    const cands = [
+      path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    ];
+    for (const c of cands) if (c && fs.existsSync(c)) return c;
+  }
+  return '';
+}
+
 async function loginWeb(key, region = 'ai') {
   if (loginBusy.has(key)) return { ok: false, key, reason: 'login already in progress, wait' };
   let chromium;
@@ -255,10 +281,30 @@ async function loginWeb(key, region = 'ai') {
   loginBusy.add(key);
   const domain = region === 'cn' ? 'www.workbuddy.cn' : 'www.workbuddy.ai';
   const cookieFile = path.join(MIRROR_DIR, `account-${key}.${region}.cookies.json`);
-  let browser;
+  let ctx;
+  let ownedBrowser = null;
   try {
-    browser = await chromium.launch({ channel: 'chrome', headless: false, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-    const ctx = await browser.newContext({ locale: region === 'cn' ? 'zh-CN' : 'en-US', viewport: { width: 1100, height: 850 } });
+    // 无痕模式（incognito）：干净会话，不带你日常 Chrome 的登录态/指纹
+    log(`[login] ${key} @ ${domain} opening incognito Chrome`);
+    ownedBrowser = await chromium.launch({
+      channel: 'chrome',
+      headless: false,
+      args: [
+        '--no-first-run', '--no-default-browser-check',
+        '--disable-blink-features=AutomationControlled',
+      ],
+    });
+    ctx = await ownedBrowser.newContext({
+      locale: region === 'cn' ? 'zh-CN' : 'en-US',
+      viewport: { width: 1100, height: 850 },
+    });
+    // 清掉自动化指纹，降低 Google 风控识别概率
+    await ctx.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'en-US'] });
+      window.chrome = { runtime: {} };
+    });
     const page = await ctx.newPage();
     await page.goto(`https://${domain}/console/account`, { waitUntil: 'domcontentloaded', timeout: 90000 });
     log(`[login] opened ${key} @ ${domain}, waiting for user`);
@@ -285,7 +331,8 @@ async function loginWeb(key, region = 'ai') {
     log('[login] error:', e.message);
     return { ok: false, key, reason: e.message.slice(0, 200) };
   } finally {
-    try { await browser?.close(); } catch {}
+    try { await ctx?.close(); } catch {}
+    try { await ownedBrowser?.close(); } catch {}
     loginBusy.delete(key);
   }
 }
