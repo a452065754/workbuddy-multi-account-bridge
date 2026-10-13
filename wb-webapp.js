@@ -161,19 +161,27 @@ async function accountA() {
 }
 
 // ============ Any account key (B/C/D/...): web cookie login ============
+// 登录判定以 billing 接口为准：
+//  - 未登录/匿名：billing 返回 401（WorkBuddy 对积分接口强制鉴权），
+//    且 /v3/config 返回 200 但 models 为空（匿名也通，不可作登录依据）。
+//  - 已登录：billing 200 且有账号数据。
+// 不能靠「cookie 列表里有没有 session 名」判定——未登录态也有匿名 session cookie。
+
 async function accountWeb(key) {
   const meta = readMeta();
   const acc = meta[key];
   if (!acc?.cookieFile || !fs.existsSync(acc.cookieFile)) return { key, ok: false, reason: 'not-logged-in', source: 'web-cookie' };
   const region = acc.region === 'cn' ? 'cn' : 'ai';
   const domain = region === 'cn' ? 'www.workbuddy.cn' : 'www.workbuddy.ai';
-  const cookies = JSON.parse(fs.readFileSync(acc.cookieFile, 'utf8'));
+  let cookies;
+  try { cookies = JSON.parse(fs.readFileSync(acc.cookieFile, 'utf8')); } catch { cookies = []; }
   const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
   const headers = {
     Cookie: cookieStr, 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36'
   };
   let credits = { total: 0 };
+  let billingStatus = 0;
   try {
     const r = await fetch(`https://${domain}/v2/billing/meter/get-user-resource`, {
       method: 'POST',
@@ -181,6 +189,7 @@ async function accountWeb(key) {
       body: JSON.stringify({ PageNumber: 1, PageSize: 100, ProductCode: 'p_tcaca', Status: [0, 3] }),
       signal: AbortSignal.timeout(20000)
     });
+    billingStatus = r.status;
     if (r.status === 200) {
       const j = await r.json().catch(() => null);
       const inner = j?.data?.Response?.Data?.Accounts || j?.data?.Accounts || [];
@@ -193,7 +202,13 @@ async function accountWeb(key) {
   } catch (e) {
     credits = { total: 0, error: e.message.slice(0, 100) };
   }
-  return { key, ok: true, region, uid: acc.uid || '', loggedInAt: acc.loggedInAt, credits, source: 'web-cookie' };
+  // billing 401 = 未登录；200 才算真登录（哪怕积分 0 也合法）
+  const loggedIn = billingStatus === 200;
+  return {
+    key, ok: loggedIn, loggedIn,
+    reason: loggedIn ? undefined : (billingStatus === 401 ? 'billing 401 (cookie 未登录态/已失效)' : `billing ${billingStatus || 'unreachable'}`),
+    region, uid: acc.uid || '', loggedInAt: acc.loggedInAt, credits, source: 'web-cookie'
+  };
 }
 
 function webAccountKeys() {
@@ -339,8 +354,8 @@ async function loginWeb(key, region = 'ai') {
     log('[login] error:', e.message);
     return { ok: false, key, reason: e.message.slice(0, 200) };
   } finally {
-    try { await ctx?.close(); } catch {}
     try { await ownedBrowser?.close(); } catch {}
+    try { await ctx?.close(); } catch {}
     loginBusy.delete(key);
   }
 }
@@ -348,6 +363,21 @@ async function loginWeb(key, region = 'ai') {
 function keyName(key) {
   if (key === 'A') return '账号 A（桌面客户端）';
   return `账号 ${key}（网页登录）`;
+}
+
+// 把网页账号 cookie 文件里的「主会话 cookie」单独摘出来（session / session_2 等），
+// 用于聊天/上游调用：billing 接口对匿名/游客 cookie 也返回 200，只算积分会误判已登录。
+function webSessionCookies(key) {
+  const meta = readMeta();
+  const acc = meta[key];
+  if (!acc?.cookieFile || !fs.existsSync(acc.cookieFile)) return null;
+  let all;
+  try { all = JSON.parse(fs.readFileSync(acc.cookieFile, 'utf8')); } catch { return null; }
+  const main = (all || []).filter(c => /^(session|session_2|sid|JSESSIONID|acw_tc|__cf_bm|tsl|ptk|uid|token|access_token)$/i.test(c.name || ''));
+  // 必须有主会话 cookie 才算真登录；纯游客 cookie（只有统计/埋点类）视为未登录
+  if (!main.length) return null;
+  const cookieStr = main.map(c => `${c.name}=${c.value}`).join('; ');
+  return { cookieStr, main, source: 'web-session' };
 }
 
 // ============ 认证信息导出 / 导入（cookie 打包，可在外网/内网间搬运） ============
@@ -385,9 +415,25 @@ function exportBundle(keys) {
   };
 }
 
-// 导入：接受 bundle 对象（或 base64 / JSON 字符串）。写入 cookie 文件 + meta，返回导入结果
-function importBundle(input) {
+// 导入：接受 bundle 对象（或 base64 / JSON 字符串）/ 纯 Cookie 字符串。写入 cookie 文件 + meta，返回导入结果
+function parseCookieString(s) {
+  // 把 "a=1; b=2" 或 "Cookie: a=1; b=2" 解析成 [{name,value,domain,path}]
+  let t = String(s).trim();
+  t = t.replace(/^cookie:\s*/i, '');
+  const out = [];
+  for (const part of t.split(';')) {
+    const p = part.trim();
+    if (!p) continue;
+    const eq = p.indexOf('=');
+    if (eq <= 0) continue;
+    out.push({ name: p.slice(0, eq), value: p.slice(eq + 1), domain: '', path: '/' });
+  }
+  return out;
+}
+
+function importBundle(input, opts = {}) {
   let bundle = input;
+  let rawCookieKey = (opts.key || 'B').toUpperCase();
   if (typeof bundle === 'string') {
     const s = bundle.trim();
     let parsed = null;
@@ -398,8 +444,18 @@ function importBundle(input) {
         parsed = JSON.parse(bin);
       } catch { parsed = null; }
     }
-    if (!parsed) return { ok: false, reason: '无法解析认证信息（既不是 JSON 也不是 base64）' };
-    bundle = parsed;
+    if (parsed && typeof parsed === 'object' && parsed.accounts) {
+      bundle = parsed;
+    } else if (!parsed) {
+      // 既不是 JSON 也不是 base64 → 当作纯 Cookie 字符串处理
+      let cookies = parseCookieString(s);
+      if (!cookies.length) return { ok: false, reason: '无法解析认证信息（既不是 bundle JSON/base64，也不是可识别的 Cookie 字符串）' };
+      const region = opts.region === 'cn' ? 'cn' : 'ai';
+      // 纯 Cookie 头没有 domain，补上对应地区主域名，保证下游 ctx.cookies(domain) 能匹配
+      const dom = region === 'cn' ? 'www.workbuddy.cn' : 'www.workbuddy.ai';
+      cookies = cookies.map(c => ({ ...c, domain: c.domain || dom, httpOnly: c.httpOnly ?? true, secure: c.secure ?? true, sameSite: c.sameSite ?? 'Lax' }));
+      bundle = { type: 'workbuddy-multi-account-auth', version: 1, accounts: { [rawCookieKey]: { region, cookies } } };
+    }
   }
   if (!bundle || typeof bundle !== 'object' || !bundle.accounts) return { ok: false, reason: '认证信息格式不正确' };
   const meta = readMeta();
@@ -407,8 +463,10 @@ function importBundle(input) {
   const skipped = [];
   for (const [k, acc] of Object.entries(bundle.accounts)) {
     if (!/^[A-Z]$/.test(k) || k === 'A') { skipped.push(k); continue; }
-    const region = acc.region === 'cn' ? 'cn' : 'ai';
-    const cookies = Array.isArray(acc.cookies) ? acc.cookies : [];
+    const region = (acc.region === 'cn' ? 'cn' : 'ai');
+    let cookies = Array.isArray(acc.cookies) ? acc.cookies : [];
+    // 若某账号只给了 cookieStr 字符串，解析之
+    if (!cookies.length && acc.cookieStr) cookies = parseCookieString(acc.cookieStr);
     const cookieFile = path.join(MIRROR_DIR, `account-${k}.${region}.cookies.json`);
     fs.mkdirSync(MIRROR_DIR, { recursive: true });
     fs.writeFileSync(cookieFile, JSON.stringify(cookies, null, 2));
@@ -512,7 +570,13 @@ footer{color:var(--mut);font-size:11px;text-align:center;padding:18px 0 30px}
     <button class="btn ghost sm" id="btnDownload" data-i18n="authDownload">下载为文件</button>
   </div>
   <div style="margin-top:12px">
-    <div class="note" data-i18n="authPasteLabel">粘贴认证信息（导出复制的内容，或文件内容）：</div>
+    <div class="note" data-i18n="authPasteLabel">粘贴认证信息（导出复制的 bundle，或直接从 DevTools 复制的纯 Cookie 头）：</div>
+    <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+      <label class="k" data-i18n="importKeyLabel">账号</label>
+      <select id="importKey" style="background:#0a0d12;color:var(--fg);border:1px solid var(--bd);border-radius:5px;padding:4px 8px;font-size:12px"><option>B</option><option>C</option><option>D</option><option>E</option><option>F</option></select>
+      <label class="k" data-i18n="importRegionLabel">地区</label>
+      <select id="importRegion" style="background:#0a0d12;color:var(--fg);border:1px solid var(--bd);border-radius:5px;padding:4px 8px;font-size:12px"><option value="ai" data-i18n="regionInt">国际版 .ai</option><option value="cn" data-i18n="regionCn">国内版 .cn</option></select>
+    </div>
     <textarea id="importArea" rows="4" style="width:100%;margin-top:6px;background:#0a0d12;color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;resize:vertical"></textarea>
     <button class="btn warn sm" id="btnImport" data-i18n="authImport">导入</button>
   </div>
@@ -571,13 +635,15 @@ const I18N={
     authExportAll:'导出全部网页账号',
     authDownload:'下载为文件',
     authCopyOne:'复制认证',
-    authPasteLabel:'粘贴认证信息（导出复制的内容，或文件内容）：',
+    authPasteLabel:'粘贴认证信息（导出复制的 bundle，或直接从 DevTools 复制的纯 Cookie 头）：',
     authImport:'导入',
+    importKeyLabel:'账号', importRegionLabel:'地区',
     authExportedN:'已复制 {n} 个账号的认证信息到剪贴板',
     authImportedOk:'导入成功 {list}，已重新路由',
     authImportFail:'导入失败：{msg}',
     authNoWeb:'没有可导出的网页账号',
-    authNote:'桌面账号 A 是本地加密凭据无法搬运，重装后需用桌面客户端重新登录；网页账号 B/C/D... 的 cookie 可导出导入'
+    authNote:'桌面账号 A 是本地加密凭据无法搬运，重装后需用桌面客户端重新登录；网页账号 B/C/D... 的 cookie 可导出导入',
+    notLoggedIn:'未登录（cookie 无效或缺少主会话凭证，请重新抓登录态的 Cookie 头导入）'
   },
   en:{
     title:'WorkBuddy Multi-Account Bridge',
@@ -615,13 +681,15 @@ const I18N={
     authExportAll:'Export all web accounts',
     authDownload:'Download as file',
     authCopyOne:'Copy auth',
-    authPasteLabel:'Paste auth info (exported text, or file content):',
+    authPasteLabel:'Paste auth (exported bundle, or raw Cookie header from DevTools):',
     authImport:'Import',
+    importKeyLabel:'Account', importRegionLabel:'Region',
     authExportedN:'Copied auth for {n} accounts to clipboard',
     authImportedOk:'Imported {list}, re-routed',
     authImportFail:'Import failed: {msg}',
     authNoWeb:'No web accounts to export',
-    authNote:'Desktop account A is a local encrypted credential, not portable; re-sign in via desktop client after reinstall. Web accounts B/C/D... cookies can be exported/imported.'
+    authNote:'Desktop account A is a local encrypted credential, not portable; re-sign in via desktop client after reinstall. Web accounts B/C/D... cookies can be exported/imported.',
+    notLoggedIn:'Not logged in (cookie invalid or missing session credential; re-import a logged-in Cookie header)'
   }
 };
 let LANG=localStorage.getItem('wb-lang')||'zh';
@@ -651,7 +719,7 @@ function accCard(a,activeKey){
   const freeModels=(a.freeModels||[]).map(m=>'<span class="chip free">'+t('freeLabel')+' '+esc(m)+'</span>').join('');
   const regionTag=a.region?'<span class="chip region">'+esc(regionLabel(a.region))+'</span>':'';
   const cred=a.credits?.total??'-';
-  const statusText=a.ok?(active?t('activeNow'):(t('online')+' · '+cred+' '+t('credits'))):(a.reason||t('offline'));
+  const statusText=a.ok?(active?t('activeNow'):(t('online')+' · '+cred+' '+t('credits'))):(a.reason==='billing 401 (cookie 未登录态/已失效)'?t('notLoggedIn'):(a.reason?t('offline')+' · '+esc(a.reason):t('offline')));
   let html='<div class="acc-card '+(active?'active':'')+'">'
     +'<h3><span class="dot '+ok+'"></span> '+esc(keyName(a.key))+' '+(active?'<span class="tag route">'+esc(t('activeTag'))+'</span>':'')+' '+regionTag+'</h3>'
     +'<div class="row"><span class="k">'+t('status')+'</span><span class="v">'+esc(statusText)+'</span></div>'
@@ -814,7 +882,7 @@ $('btnImport').onclick=async()=>{
   const val=$('importArea').value;
   if(!val||!val.trim()){alert(t('authPasteLabel'));return}
   try{
-    const r=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bundle:val})});
+    const r=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bundle:val,key:$('importKey').value,region:$('importRegion').value})});
     const o=await r.json();
     if(o.ok){
       const list=(o.imported||[]).map(x=>x.key+'('+x.region+','+x.cookies+'c)').join('、');
@@ -948,14 +1016,14 @@ async function main() {
       return;
     }
 
-    // 导入认证信息：POST { bundle: "<json 或 base64>" }
+    // 导入认证信息：POST { bundle: "<json 或 base64 或纯 Cookie 字符串>", key?: "B", region?: "ai|cn" }
     if (req.method === 'POST' && clean === '/api/import') {
       const chunks = [];
       req.on('data', c => chunks.push(c));
       req.on('end', async () => {
         let body = {};
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { body = { bundle: Buffer.concat(chunks).toString('utf8') }; }
-        const r = importBundle(body.bundle ?? body);
+        const r = importBundle(body.bundle ?? body, { key: body.key, region: body.region });
         let reRoute = null;
         if (r.ok) reRoute = await route().catch(e => ({ error: e.message }));
         res.writeHead(200, { 'Content-Type': 'application/json' });
