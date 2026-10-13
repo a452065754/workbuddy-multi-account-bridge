@@ -486,6 +486,41 @@ function importBundle(input, opts = {}) {
   return { ok: true, imported, skipped };
 }
 
+// 删除网页账号：移除 meta 记录 + cookie 文件 + 重新路由。桌面账号 A 不可删（本地加密凭据）。
+// 注意：只删「该账号当前地区的 cookie 文件」，同账号其它地区（ai/cn）的 cookie 保留。
+function deleteWebAccount(key) {
+  const k = String(key || '').toUpperCase();
+  if (!/^[A-Z]$/.test(k) || k === 'A') return { ok: false, reason: 'only web accounts B/C/D/... can be deleted; A is desktop' };
+  const meta = readMeta();
+  const acc = meta[k];
+  let removed = false;
+  if (acc) {
+    delete meta[k];
+    removed = true;
+    if (acc.cookieFile && fs.existsSync(acc.cookieFile)) {
+      try { fs.unlinkSync(acc.cookieFile); } catch {}
+    }
+  }
+  writeMeta(meta);
+  log(`[delete] account ${k} removed=${removed}`);
+  return { ok: true, key: k, removed };
+}
+
+// 删除账号在某个地区的 cookie（保留 meta，便于切换地区时复用已登录态）。
+// UI「删除账号」删的是整账号；此函数供地区级清理用（暂留作内部工具）。
+function deleteAccountRegionCookie(key, region) {
+  const k = String(key || '').toUpperCase();
+  if (!/^[A-Z]$/.test(k) || k === 'A') return { ok: false, reason: 'only web accounts B/C/D/...' };
+  const r = region === 'cn' ? 'cn' : 'ai';
+  const cookieFile = path.join(MIRROR_DIR, `account-${k}.${r}.cookies.json`);
+  let removed = false;
+  if (fs.existsSync(cookieFile)) {
+    try { fs.unlinkSync(cookieFile); removed = true; } catch {}
+  }
+  log(`[delete-region] ${k} ${r} cookie removed=${removed}`);
+  return { ok: true, key: k, region: r, removed };
+}
+
 // ============ HTML UI (dynamic multi-account, i18n: zh default / en optional) ============
 function uiPage() {
   return `<!DOCTYPE html>
@@ -635,6 +670,10 @@ const I18N={
     authExportAll:'导出全部网页账号',
     authDownload:'下载为文件',
     authCopyOne:'复制认证',
+    authDelete:'删除账号',
+    authDeleteConfirm:'删除账号 {k}？其 cookie 与登录记录将被移除，可随时重新登录/导入恢复。',
+    authDeleted:'账号 {k} 已删除',
+    authDeleteFail:'删除失败：{msg}',
     authPasteLabel:'粘贴认证信息（导出复制的 bundle，或直接从 DevTools 复制的纯 Cookie 头）：',
     authImport:'导入',
     importKeyLabel:'账号', importRegionLabel:'地区',
@@ -681,6 +720,10 @@ const I18N={
     authExportAll:'Export all web accounts',
     authDownload:'Download as file',
     authCopyOne:'Copy auth',
+    authDelete:'Delete account',
+    authDeleteConfirm:'Delete account {k}? Its cookies and login records will be removed; re-login/import anytime to restore.',
+    authDeleted:'Account {k} deleted',
+    authDeleteFail:'Delete failed: {msg}',
     authPasteLabel:'Paste auth (exported bundle, or raw Cookie header from DevTools):',
     authImport:'Import',
     importKeyLabel:'Account', importRegionLabel:'Region',
@@ -729,7 +772,8 @@ function accCard(a,activeKey){
   if(!isDesktop){
     const rl=a.region==='cn'?t('reloginCn'):t('reloginInt');
     html+='<button class="btn sm" onclick="doLogin(\\''+a.key+'\\','+'\\''+(a.region||'ai')+'\\')">'+esc(rl)+'</button>'
-      +'<button class="btn ghost sm" onclick="copyAuthOne(\\''+a.key+'\\')">'+esc(t('authCopyOne'))+'</button>';
+      +'<button class="btn ghost sm" onclick="copyAuthOne(\\''+a.key+'\\')">'+esc(t('authCopyOne'))+'</button>'
+      +'<button class="btn warn sm" onclick="doDelete(\\''+a.key+'\\')">'+esc(t('authDelete'))+'</button>';
   }
   html+='</div>';
   return html;
@@ -816,6 +860,20 @@ async function copyAuthOne(key){
     const ok=await copyTextToClipboard(o.base64);
     alert(ok?t('authExportedN',{n:1}):'复制失败，请手动选择文本复制');
   }catch(e){alert('导出失败：'+e.message)}
+}
+async function doDelete(key){
+  if(key==='A'){alert(t('authDeleteFail',{msg:'A（桌面客户端）不可删除'}));return}
+  if(!confirm(t('authDeleteConfirm',{k:key})))return;
+  try{
+    const r=await fetch('/api/accounts/delete?key='+encodeURIComponent(key),{method:'POST'});
+    const o=await r.json();
+    if(o.ok){
+      alert(t('authDeleted',{k:key}));
+      await refresh();
+    }else{
+      alert(t('authDeleteFail',{msg:o.reason||JSON.stringify(o)}));
+    }
+  }catch(e){alert('删除失败：'+e.message)}
 }
 // ===== 点击复制：Base URL / API Key =====
 function flashCopied(btn){
@@ -994,6 +1052,17 @@ async function main() {
       const r = await loginWeb(key, region);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(r));
+      return;
+    }
+
+    // 删除网页账号：POST /api/accounts/delete?key=B （仅 B/C/D...，A 桌面不可删）
+    if (req.method === 'POST' && clean === '/api/accounts/delete') {
+      const key = (query.get('key') || '').toUpperCase();
+      const r = deleteWebAccount(key);
+      let reRoute = null;
+      if (r.ok) reRoute = await route().catch(e => ({ error: e.message }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ...r, reRoute: reRoute ? { activeKey: reRoute.activeKey, reason: reRoute.reason } : null }));
       return;
     }
 
