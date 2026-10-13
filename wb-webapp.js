@@ -313,12 +313,20 @@ async function loginWeb(key, region = 'ai') {
     while (Date.now() < deadline) {
       try { await page.waitForTimeout(2000); } catch { break; }
       try {
-        const t = await page.evaluate(() => document.body.innerText);
-        if (/Sign out|退出|积分|余额|套餐|我的|订阅|账号设置|Credits|Plan|Billing/.test(t)) { loggedIn = true; break; }
-      } catch { break; }
+        // 检查所有打开的页面（含 Google OAuth 弹窗/新标签）里是否出现登录态标志
+        const pages = ctx.pages();
+        for (const p of pages) {
+          let t = '';
+          try { t = await p.evaluate(() => document.body ? document.body.innerText : ''); } catch { continue; }
+          if (/Sign out|退出|积分|余额|套餐|我的|订阅|账号设置|Credits|Plan|Billing|workbuddy\.ai\/console/.test(t)) { loggedIn = true; break; }
+        }
+        if (loggedIn) break;
+      } catch { /* 页面跳转/弹窗造成的 evaluate 失败，不中断等待 */ }
     }
     let cookies = [];
     try { cookies = await ctx.cookies(`https://${domain}`); } catch {}
+    // 有真实登录 cookie 也算成功（即使文本没匹配到）
+    if (!loggedIn && cookies.length >= 3) loggedIn = true;
     const meta = readMeta();
     fs.mkdirSync(MIRROR_DIR, { recursive: true });
     if (cookies.length) fs.writeFileSync(cookieFile, JSON.stringify(cookies, null, 2));
