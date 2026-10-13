@@ -719,7 +719,7 @@ function accCard(a,activeKey){
   const freeModels=(a.freeModels||[]).map(m=>'<span class="chip free">'+t('freeLabel')+' '+esc(m)+'</span>').join('');
   const regionTag=a.region?'<span class="chip region">'+esc(regionLabel(a.region))+'</span>':'';
   const cred=a.credits?.total??'-';
-  const statusText=a.ok?(active?t('activeNow'):(t('online')+' · '+cred+' '+t('credits'))):(a.reason==='billing 401 (cookie 未登录态/已失效)'?t('notLoggedIn'):(a.reason?t('offline')+' · '+esc(a.reason):t('offline')));
+  const statusText=a.ok?(active?t('activeNow'):(t('online')+' · '+cred+' '+t('credits'))):(a.reason?t('offline')+' · '+esc(a.reason):t('offline'));
   let html='<div class="acc-card '+(active?'active':'')+'">'
     +'<h3><span class="dot '+ok+'"></span> '+esc(keyName(a.key))+' '+(active?'<span class="tag route">'+esc(t('activeTag'))+'</span>':'')+' '+regionTag+'</h3>'
     +'<div class="row"><span class="k">'+t('status')+'</span><span class="v">'+esc(statusText)+'</span></div>'
